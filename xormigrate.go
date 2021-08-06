@@ -1,4 +1,4 @@
-package xormigrate // import "src.techknowlogick.com/xormigrate"
+package xormigrate
 
 import (
 	"errors"
@@ -8,24 +8,40 @@ import (
 )
 
 const (
-	initSchemaMigrationId = "SCHEMA_INIT"
+	initSchemaMigrationID = "SCHEMA_INIT"
 )
 
 // MigrateFunc is the func signature for migratinx.
-type MigrateFunc func(*xorm.Engine) error
+type MigrateFunc func(*xorm.Session) error
 
 // RollbackFunc is the func signature for rollbackinx.
-type RollbackFunc func(*xorm.Engine) error
+type RollbackFunc func(*xorm.Session) error
 
 // InitSchemaFunc is the func signature for initializing the schema.
-type InitSchemaFunc func(*xorm.Engine) error
+type InitSchemaFunc func(*xorm.Session) error
+
+// Options define options for all migrations.
+type Options struct {
+	// TableName is the migration table.
+	TableName string
+	// IDColumnName is the name of column where the migration id will be stored.
+	IDColumnName string
+	// IDColumnSize is the length of the migration id column
+	IDColumnSize int
+	// UseTransaction makes Gormigrate execute migrations inside a single transaction.
+	// Keep in mind that not all databases support DDL commands inside transactions.
+	UseTransaction bool
+	// ValidateUnknownMigrations will cause migrate to fail if there's unknown migration
+	// IDs in the database
+	ValidateUnknownMigrations bool
+}
 
 // Migration represents a database migration (a modification to be made on the database).
 type Migration struct {
 	// ID is the migration identifier. Usually a timestamp like "201601021504".
 	ID string `xorm:"id"`
 	// Description is the migration description, which is optionally printed out when the migration is ran.
-	Description string
+	Description string `xorm:"description"`
 	// Migrate is a function that will br executed while running this migration.
 	Migrate MigrateFunc `xorm:"-"`
 	// Rollback will be executed on rollback. Can be nil.
@@ -34,7 +50,8 @@ type Migration struct {
 
 // Xormigrate represents a collection of all migrations of a database schema.
 type Xormigrate struct {
-	db         *xorm.Engine
+	session    *xorm.Session
+	options    *Options
 	migrations []*Migration
 	initSchema InitSchemaFunc
 }
@@ -58,6 +75,15 @@ func (e *DuplicatedIDError) Error() string {
 }
 
 var (
+	// DefaultOptions can be used if you don't want to think about options.
+	DefaultOptions = &Options{
+		TableName:                 "migrations",
+		IDColumnName:              "id",
+		IDColumnSize:              255,
+		UseTransaction:            false,
+		ValidateUnknownMigrations: false,
+	}
+
 	// ErrRollbackImpossible is returned when trying to rollback a migration
 	// that has no rollback function.
 	ErrRollbackImpossible = errors.New("xormigrate: It's impossible to rollback this migration")
@@ -75,12 +101,25 @@ var (
 	// ErrMigrationIDDoesNotExist is returned when migrating or rolling back to a migration ID that
 	// does not exist in the list of migrations
 	ErrMigrationIDDoesNotExist = errors.New("xormigrate: Tried to migrate to an ID that doesn't exist")
+
+	// ErrUnknownPastMigration is returned if a migration exists in the DB that doesn't exist in the code
+	ErrUnknownPastMigration = errors.New("xormigrate: Found migration in DB that does not exist in code")
 )
 
 // New returns a new Xormigrate.
-func New(db *xorm.Engine, migrations []*Migration) *Xormigrate {
+func New(session *xorm.Session, options *Options, migrations []*Migration) *Xormigrate {
+	if options.TableName == "" {
+		options.TableName = DefaultOptions.TableName
+	}
+	if options.IDColumnName == "" {
+		options.IDColumnName = DefaultOptions.IDColumnName
+	}
+	if options.IDColumnSize == 0 {
+		options.IDColumnSize = DefaultOptions.IDColumnSize
+	}
 	return &Xormigrate{
-		db:         db,
+		session:    session,
+		options:    options,
 		migrations: migrations,
 	}
 }
@@ -95,7 +134,14 @@ func (x *Xormigrate) InitSchema(initSchema InitSchemaFunc) {
 
 // Migrate executes all migrations that did not run yet.
 func (x *Xormigrate) Migrate() error {
-	return x.migrate("")
+	if !x.hasMigrations() {
+		return ErrNoMigrationDefined
+	}
+	var targetMigrationID string
+	if len(x.migrations) > 0 {
+		targetMigrationID = x.migrations[len(x.migrations)-1].ID
+	}
+	return x.migrate(targetMigrationID)
 }
 
 // MigrateTo executes all migrations that did not run yet up to the migration that matches `migrationID`.
@@ -110,23 +156,40 @@ func (x *Xormigrate) migrate(migrationID string) error {
 	if !x.hasMigrations() {
 		return ErrNoMigrationDefined
 	}
-
 	if err := x.checkReservedID(); err != nil {
 		return err
 	}
-
 	if err := x.checkDuplicatedID(); err != nil {
 		return err
 	}
 
+	x.begin()
+	defer x.rollback()
+
 	if err := x.createMigrationTableIfNotExists(); err != nil {
 		return err
 	}
-
-	if x.initSchema != nil && x.canInitializeSchema() {
-		return x.runInitSchema() // return error or nil
+	if x.options.ValidateUnknownMigrations {
+		unknownMigrations, err := x.unknownMigrationsHaveHappened()
+		if err != nil {
+			return err
+		}
+		if unknownMigrations {
+			return ErrUnknownPastMigration
+		}
 	}
-
+	if x.initSchema != nil {
+		canInitializeSchema, err := x.canInitializeSchema()
+		if err != nil {
+			return err
+		}
+		if canInitializeSchema {
+			if err := x.runInitSchema(); err != nil {
+				return err
+			}
+			return x.commit()
+		}
+	}
 	for _, migration := range x.migrations {
 		if err := x.runMigration(migration); err != nil {
 			return err
@@ -135,8 +198,7 @@ func (x *Xormigrate) migrate(migrationID string) error {
 			break
 		}
 	}
-
-	return nil
+	return x.commit()
 }
 
 // There are migrations to apply if either there's a defined
@@ -149,7 +211,7 @@ func (x *Xormigrate) hasMigrations() bool {
 // For now there's only have one reserved ID, but there may be more in the future.
 func (x *Xormigrate) checkReservedID() error {
 	for _, m := range x.migrations {
-		if m.ID == initSchemaMigrationId {
+		if m.ID == initSchemaMigrationID {
 			return &ReservedIDError{ID: m.ID}
 		}
 	}
@@ -182,12 +244,17 @@ func (x *Xormigrate) RollbackLast() error {
 		return ErrNoMigrationDefined
 	}
 
+	x.begin()
+	defer x.rollback()
+
 	lastRunMigration, err := x.getLastRunMigration()
 	if err != nil {
 		return err
 	}
-
-	return x.RollbackMigration(lastRunMigration) // return error or nil
+	if err := x.rollbackMigration(lastRunMigration); err != nil {
+		return err
+	}
+	return x.commit()
 }
 
 // RollbackTo undoes migrations up to the given migration that matches the `migrationID`.
@@ -196,30 +263,39 @@ func (x *Xormigrate) RollbackTo(migrationID string) error {
 	if len(x.migrations) == 0 {
 		return ErrNoMigrationDefined
 	}
-
 	if err := x.checkIDExist(migrationID); err != nil {
 		return err
 	}
+
+	x.begin()
+	defer x.rollback()
 
 	for i := len(x.migrations) - 1; i >= 0; i-- {
 		migration := x.migrations[i]
 		if migration.ID == migrationID {
 			break
 		}
-		if x.migrationDidRun(migration) {
+		migrationRan, err := x.migrationRan(migration)
+		if err != nil {
+			return err
+		}
+		if migrationRan {
 			if err := x.rollbackMigration(migration); err != nil {
 				return err
 			}
 		}
 	}
-
-	return nil
+	return x.commit()
 }
 
 func (x *Xormigrate) getLastRunMigration() (*Migration, error) {
 	for i := len(x.migrations) - 1; i >= 0; i-- {
 		migration := x.migrations[i]
-		if x.migrationDidRun(migration) {
+		migrationRan, err := x.migrationRan(migration)
+		if err != nil {
+			return nil, err
+		}
+		if migrationRan {
 			return migration, nil
 		}
 	}
@@ -228,40 +304,40 @@ func (x *Xormigrate) getLastRunMigration() (*Migration, error) {
 
 // RollbackMigration undo a migration.
 func (x *Xormigrate) RollbackMigration(m *Migration) error {
-	return x.rollbackMigration(m) // return error or nil
+	x.begin()
+	defer x.rollback()
+
+	if err := x.rollbackMigration(m); err != nil {
+		return err
+	}
+	return x.commit()
 }
 
 func (x *Xormigrate) rollbackMigration(m *Migration) error {
 	if m.Rollback == nil {
 		return ErrRollbackImpossible
 	}
-	if len(m.Description) > 0 {
-		logger.Errorf("Rolling back migration: %s", m.Description)
-	}
-	if err := m.Rollback(x.db); err != nil {
+	if err := m.Rollback(x.session); err != nil {
 		return err
 	}
-	if _, err := x.db.In("id", m.ID).Delete(&Migration{}); err != nil {
+	if _, err := x.session.Table(x.options.TableName).In("id", m.ID).Delete(&Migration{}); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (x *Xormigrate) runInitSchema() error {
-	logger.Info("Initializing Schema")
-	if err := x.initSchema(x.db); err != nil {
+	if err := x.initSchema(x.session); err != nil {
 		return err
 	}
-	if err := x.insertMigration(initSchemaMigrationId); err != nil {
+	if err := x.insertMigration(initSchemaMigrationID); err != nil {
 		return err
 	}
-
 	for _, migration := range x.migrations {
 		if err := x.insertMigration(migration.ID); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 
@@ -269,54 +345,105 @@ func (x *Xormigrate) runMigration(migration *Migration) error {
 	if len(migration.ID) == 0 {
 		return ErrMissingID
 	}
-
-	if !x.migrationDidRun(migration) {
-		if len(migration.Description) > 0 {
-			logger.Info(migration.Description)
-		}
-		if err := migration.Migrate(x.db); err != nil {
-			return fmt.Errorf("migration %s failed: %s", migration.ID, err.Error())
+	migrationRan, err := x.migrationRan(migration)
+	if err != nil {
+		return err
+	}
+	if !migrationRan {
+		if err := migration.Migrate(x.session); err != nil {
+			return err
 		}
 
 		if err := x.insertMigration(migration.ID); err != nil {
-			return fmt.Errorf("inserting migration %s failed: %s", migration.ID, err.Error())
+			return err
 		}
 	}
 	return nil
 }
 
 func (x *Xormigrate) createMigrationTableIfNotExists() error {
-	err := x.db.Sync2(new(Migration))
-	return err
+	b, err := x.session.IsTableExist(x.options.TableName)
+	if b {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return x.session.Table(x.options.TableName).Sync2(new(Migration))
 }
 
-func (x *Xormigrate) migrationDidRun(m *Migration) bool {
-	count, err := x.db.
+func (x *Xormigrate) migrationRan(m *Migration) (bool, error) {
+	count, err := x.session.
+		Table(x.options.TableName).
 		In("id", m.ID).
 		Count(&Migration{})
-	if err != nil {
-		return false
-	}
-	return count > 0
+	return count > 0, err
 }
 
-// The schema can be initialised only if it hasn't been initialised yet
+// The schema can be initialized only if it hasn't been initialized yet
 // and no other migration has been applied already.
-func (x *Xormigrate) canInitializeSchema() bool {
-	if x.migrationDidRun(&Migration{ID: initSchemaMigrationId}) {
-		return false
+func (x *Xormigrate) canInitializeSchema() (bool, error) {
+	migrationRan, err := x.migrationRan(&Migration{ID: initSchemaMigrationID})
+	if err != nil {
+		return false, err
+	}
+	if migrationRan {
+		return false, nil
 	}
 
 	// If the ID doesn't exist, we also want the list of migrations to be empty
-	count, err := x.db.
+	count, err := x.session.
+		Table(x.options.TableName).
 		Count(&Migration{})
+	return count == 0, err
+}
+
+func (x *Xormigrate) unknownMigrationsHaveHappened() (bool, error) {
+	rows, err := x.session.Table(x.options.TableName).Select(x.options.IDColumnName).Rows(&Migration{})
 	if err != nil {
-		return false
+		return false, err
 	}
-	return count == 0
+	defer rows.Close()
+
+	validIDSet := make(map[string]struct{}, len(x.migrations)+1)
+	validIDSet[initSchemaMigrationID] = struct{}{}
+	for _, migration := range x.migrations {
+		validIDSet[migration.ID] = struct{}{}
+	}
+
+	for rows.Next() {
+		var pastMigrationID string
+		if err := rows.Scan(&pastMigrationID); err != nil {
+			return false, err
+		}
+		if _, ok := validIDSet[pastMigrationID]; !ok {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 func (x *Xormigrate) insertMigration(id string) error {
-	_, err := x.db.Insert(&Migration{ID: id})
+	_, err := x.session.Table(x.options.TableName).Insert(&Migration{ID: id})
 	return err
+}
+
+func (x *Xormigrate) begin() {
+	if x.options.UseTransaction {
+		x.session.Begin()
+	}
+}
+
+func (x *Xormigrate) commit() error {
+	if x.options.UseTransaction {
+		return x.session.Commit()
+	}
+	return nil
+}
+
+func (x *Xormigrate) rollback() {
+	if x.options.UseTransaction {
+		x.session.Rollback()
+	}
 }
