@@ -9,5 +9,5 @@ require (
 	github.com/lib/pq v1.10.2
 	github.com/mattn/go-sqlite3 v1.14.8
 	github.com/stretchr/testify v1.7.0
-	xorm.io/xorm v1.2.0
+	xorm.io/xorm v1.2.1
 )
