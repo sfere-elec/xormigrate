@@ -399,7 +399,8 @@ func (x *Xormigrate) canInitializeSchema() (bool, error) {
 }
 
 func (x *Xormigrate) unknownMigrationsHaveHappened() (bool, error) {
-	rows, err := x.session.Table(x.options.TableName).Select(x.options.IDColumnName).Rows(&Migration{})
+	migration := &Migration{}
+	rows, err := x.session.Table(x.options.TableName).Rows(migration)
 	if err != nil {
 		return false, err
 	}
@@ -412,11 +413,10 @@ func (x *Xormigrate) unknownMigrationsHaveHappened() (bool, error) {
 	}
 
 	for rows.Next() {
-		var pastMigrationID string
-		if err := rows.Scan(&pastMigrationID); err != nil {
+		if err := rows.Scan(migration); err != nil {
 			return false, err
 		}
-		if _, ok := validIDSet[pastMigrationID]; !ok {
+		if _, ok := validIDSet[migration.ID]; !ok {
 			return true, nil
 		}
 	}
