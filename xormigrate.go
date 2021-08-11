@@ -7,9 +7,7 @@ import (
 	"xorm.io/xorm"
 )
 
-const (
-	initSchemaMigrationID = "SCHEMA_INIT"
-)
+const initSchemaMigrationID = "SCHEMA_INIT"
 
 // MigrateFunc is the func signature for migratinx.
 type MigrateFunc func(*xorm.Session) error
@@ -24,10 +22,6 @@ type InitSchemaFunc func(*xorm.Session) error
 type Options struct {
 	// TableName is the migration table.
 	TableName string
-	// IDColumnName is the name of column where the migration id will be stored.
-	IDColumnName string
-	// IDColumnSize is the length of the migration id column
-	IDColumnSize int
 	// UseTransaction makes Gormigrate execute migrations inside a single transaction.
 	// Keep in mind that not all databases support DDL commands inside transactions.
 	UseTransaction bool
@@ -39,9 +33,7 @@ type Options struct {
 // Migration represents a database migration (a modification to be made on the database).
 type Migration struct {
 	// ID is the migration identifier. Usually a timestamp like "201601021504".
-	ID string `xorm:"id"`
-	// Description is the migration description, which is optionally printed out when the migration is ran.
-	Description string `xorm:"description"`
+	ID string `xorm:"VARCHAR(50) notnull pk 'id'"`
 	// Migrate is a function that will br executed while running this migration.
 	Migrate MigrateFunc `xorm:"-"`
 	// Rollback will be executed on rollback. Can be nil.
@@ -78,8 +70,6 @@ var (
 	// DefaultOptions can be used if you don't want to think about options.
 	DefaultOptions = &Options{
 		TableName:                 "migrations",
-		IDColumnName:              "id",
-		IDColumnSize:              255,
 		UseTransaction:            false,
 		ValidateUnknownMigrations: false,
 	}
@@ -111,12 +101,6 @@ func New(session *xorm.Session, options *Options, migrations []*Migration) *Xorm
 	if options.TableName == "" {
 		options.TableName = DefaultOptions.TableName
 	}
-	if options.IDColumnName == "" {
-		options.IDColumnName = DefaultOptions.IDColumnName
-	}
-	if options.IDColumnSize == 0 {
-		options.IDColumnSize = DefaultOptions.IDColumnSize
-	}
 	return &Xormigrate{
 		session:    session,
 		options:    options,
@@ -137,9 +121,10 @@ func (x *Xormigrate) Migrate() error {
 	if !x.hasMigrations() {
 		return ErrNoMigrationDefined
 	}
-	var targetMigrationID string
-	if len(x.migrations) > 0 {
-		targetMigrationID = x.migrations[len(x.migrations)-1].ID
+	targetMigrationID := ""
+	l := len(x.migrations)
+	if l > 0 {
+		targetMigrationID = x.migrations[l-1].ID
 	}
 	return x.migrate(targetMigrationID)
 }
@@ -320,7 +305,7 @@ func (x *Xormigrate) rollbackMigration(m *Migration) error {
 	if err := m.Rollback(x.session); err != nil {
 		return err
 	}
-	if _, err := x.session.Table(x.options.TableName).In("id", m.ID).Delete(&Migration{}); err != nil {
+	if _, err := x.session.Table(x.options.TableName).ID(m.ID).Delete(&Migration{}); err != nil {
 		return err
 	}
 	return nil
@@ -332,11 +317,6 @@ func (x *Xormigrate) runInitSchema() error {
 	}
 	if err := x.insertMigration(initSchemaMigrationID); err != nil {
 		return err
-	}
-	for _, migration := range x.migrations {
-		if err := x.insertMigration(migration.ID); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -363,19 +343,19 @@ func (x *Xormigrate) runMigration(migration *Migration) error {
 
 func (x *Xormigrate) createMigrationTableIfNotExists() error {
 	b, err := x.session.IsTableExist(x.options.TableName)
-	if b {
-		return nil
-	}
 	if err != nil {
 		return err
 	}
-	return x.session.Table(x.options.TableName).Sync2(new(Migration))
+	if b {
+		return nil
+	}
+	return x.session.Table(x.options.TableName).Sync2(&Migration{})
 }
 
 func (x *Xormigrate) migrationRan(m *Migration) (bool, error) {
 	count, err := x.session.
 		Table(x.options.TableName).
-		In("id", m.ID).
+		ID(m.ID).
 		Count(&Migration{})
 	return count > 0, err
 }
@@ -399,29 +379,13 @@ func (x *Xormigrate) canInitializeSchema() (bool, error) {
 }
 
 func (x *Xormigrate) unknownMigrationsHaveHappened() (bool, error) {
-	migration := &Migration{}
-	rows, err := x.session.Table(x.options.TableName).Rows(migration)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-
-	validIDSet := make(map[string]struct{}, len(x.migrations)+1)
-	validIDSet[initSchemaMigrationID] = struct{}{}
+	m := make([]string, 0, len(x.migrations)+1) //append(x.migrations, &Migration{ID: initSchemaMigrationID})
+	m = append(m, initSchemaMigrationID)
 	for _, migration := range x.migrations {
-		validIDSet[migration.ID] = struct{}{}
+		m = append(m, migration.ID)
 	}
-
-	for rows.Next() {
-		if err := rows.Scan(migration); err != nil {
-			return false, err
-		}
-		if _, ok := validIDSet[migration.ID]; !ok {
-			return true, nil
-		}
-	}
-
-	return false, nil
+	count, err := x.session.Table(x.options.TableName).NotIn("id", m).Count(&Migration{})
+	return count > 0, err
 }
 
 func (x *Xormigrate) insertMigration(id string) error {

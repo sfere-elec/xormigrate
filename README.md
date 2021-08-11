@@ -1,7 +1,4 @@
 # Xormigrate
-[![Build Status](https://cloud.drone.io/api/badges/techknowlogick/xormigrate/status.svg)](https://cloud.drone.io/techknowlogick/xormigrate)
-[![Go Report Card](https://goreportcard.com/badge/src.techknowlogick.com/xormigrate)](https://goreportcard.com/report/src.techknowlogick.com/xormigrate)
-[![GoDoc](https://godoc.org/src.techknowlogick.com/xormigrate?status.svg)](https://godoc.org/src.techknowlogick.com/xormigrate)
 
 ## Supported databases
 
@@ -16,7 +13,7 @@ It supports any of the databases Xorm supports:
 ## Installing
 
 ```bash
-go get -u src.techknowlogick.com/xormigrate
+go get -u github.com/sfere-elec/xormigrate
 ```
 
 ## Usage
@@ -27,7 +24,7 @@ package main
 import (
 	"log"
 
-	"src.techknowlogick.com/xormigrate"
+	"github.com/sfere-elec/xormigrate"
 
 	"xorm.io/xorm"
 	_ "github.com/mattn/go-sqlite3"
@@ -39,13 +36,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	m := xormigrate.New(db, []*xormigrate.Migration{
+	m := xormigrate.New(db.NewSession(), &Options{
+			TableName:                 "migration",
+			UseTransaction:            true,
+			ValidateUnknownMigrations: true,
+		}, []*xormigrate.Migration{
 		// create persons table
 		{
 			ID: "201608301400",
-			// An optional description to print out to the Xormigrate logger
-			Description: "Create the Person table",
-			Migrate: func(tx *xorm.Engine) error {
+			Migrate: func(tx *xorm.Session) error {
 				// it's a good pratice to copy the struct inside the function,
 				// so side effects are prevented if the original struct changes during the time
 				type Person struct {
@@ -53,21 +52,21 @@ func main() {
 				}
 				return tx.Sync2(&Person{})
 			},
-			Rollback: func(tx *xorm.Engine) error {
+			Rollback: func(tx *xorm.Session) error {
 				return tx.DropTables(&Person{})
 			},
 		},
 		// add age column to persons
 		{
 			ID: "201608301415",
-			Migrate: func(tx *xorm.Engine) error {
+			Migrate: func(tx *xorm.Session) error {
 				// when table already exists, it just adds fields as columns
 				type Person struct {
 					Age int
 				}
 				return tx.Sync2(&Person{})
 			},
-			Rollback: func(tx *xorm.Engine) error {
+			Rollback: func(tx *xorm.Session) error {
 				// Note: Column dropping in sqlite is not support, and you will need to do this manually
 				_, err = tx.Exec("ALTER TABLE person DROP COLUMN age")
 				if err != nil {
@@ -79,14 +78,14 @@ func main() {
 		// add pets table
 		{
 			ID: "201608301430",
-			Migrate: func(tx *xorm.Engine) error {
+			Migrate: func(tx *xorm.Session) error {
 				type Pet struct {
 					Name     string
 					PersonID int
 				}
 				return tx.Sync2(&Pet{})
 			},
-			Rollback: func(tx *xorm.Engine) error {
+			Rollback: func(tx *xorm.Session) error {
 				return tx.DropTables(&Pet{})
 			},
 		},
@@ -118,11 +117,11 @@ type Pet struct {
 	PersonID int
 }
 
-m := xormigrate.New(db, []*xormigrate.Migration{
+m := xormigrate.New(db.NewSession(), []*xormigrate.Migration{
     // your migrations here
 })
 
-m.InitSchema(func(tx *xorm.Engine) error {
+m.InitSchema(func(tx *xorm.Session) error {
 	err := tx.sync2(
 		&Person{},
 		&Pet{},
@@ -135,29 +134,10 @@ m.InitSchema(func(tx *xorm.Engine) error {
 })
 ```
 
-## Adding migration descriptions to your logging
-Xormigrate's logger defaults to stdout, but it can be changed to suit your needs.  
-```go
-m := xormigrate.New(db, []*xormigrate.Migration{
-    // your migrations here
-})
-
-// Don't log anything
-m.NilLogger() 
-
-// This is the default logger
-// No need to initialize this unless it was changed
-// [xormigrate] message
-m.DefaultLogger()
-
-// Or, create a logger with any io.Writer you want
-m.NewLogger(os.Stdout)
-```
-
 ## Credits
 
-* Based on [Gormigrate][gormmigrate]
-* Uses [Xorm][xorm]
+- Based on [Gormigrate v2][gormmigrate]
+- Uses [Xorm][xorm]
 
-[xorm]: http://xorm.io/
+[xorm]: https://xorm.io
 [gormmigrate]: https://github.com/go-gormigrate/gormigrate

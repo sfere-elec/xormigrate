@@ -18,8 +18,7 @@ type database struct {
 
 var migrations = []*Migration{
 	{
-		ID:          "201608301400",
-		Description: "Add Person",
+		ID: "201608301400",
 		Migrate: func(tx *xorm.Session) error {
 			return tx.Sync2(&Person{})
 		},
@@ -49,26 +48,24 @@ var extendedMigrations = append(migrations, &Migration{
 })
 
 type Person struct {
-	ID   int `xorm:"id"`
-	Name string
+	ID   int    `xorm:"id"`
+	Name string `xorm:"name"`
 }
 
 type Pet struct {
-	Name     string
-	PersonID int `xorm:"person_id"`
+	Name     string `xorm:"name"`
+	PersonID int    `xorm:"person_id"`
 }
 
 type Book struct {
-	Name     string
-	PersonID int `xorm:"person_id"`
+	Name     string `xorm:"name"`
+	PersonID int    `xorm:"person_id"`
 }
 
 func TestMigration(t *testing.T) {
-	forEachDatabase(t, func(db *xorm.Session) {
-		m := New(db, &Options{
+	forEachDatabase(t, func(db *xorm.Engine) {
+		m := New(db.NewSession(), &Options{
 			TableName:                 "migration",
-			IDColumnName:              "id",
-			IDColumnSize:              255,
 			UseTransaction:            true,
 			ValidateUnknownMigrations: true,
 		}, migrations)
@@ -106,11 +103,9 @@ func TestMigration(t *testing.T) {
 }
 
 func TestMigrateTo(t *testing.T) {
-	forEachDatabase(t, func(db *xorm.Session) {
-		m := New(db, &Options{
+	forEachDatabase(t, func(db *xorm.Engine) {
+		m := New(db.NewSession(), &Options{
 			TableName:                 "migration",
-			IDColumnName:              "id",
-			IDColumnSize:              255,
 			UseTransaction:            true,
 			ValidateUnknownMigrations: true,
 		}, extendedMigrations)
@@ -128,11 +123,9 @@ func TestMigrateTo(t *testing.T) {
 }
 
 func TestRollbackTo(t *testing.T) {
-	forEachDatabase(t, func(db *xorm.Session) {
-		m := New(db, &Options{
+	forEachDatabase(t, func(db *xorm.Engine) {
+		m := New(db.NewSession(), &Options{
 			TableName:                 "migration",
-			IDColumnName:              "id",
-			IDColumnSize:              255,
 			UseTransaction:            true,
 			ValidateUnknownMigrations: true,
 		}, extendedMigrations)
@@ -164,11 +157,9 @@ func TestRollbackTo(t *testing.T) {
 // If initSchema is defined, but no migrations are provided,
 // then initSchema is executed.
 func TestInitSchemaNoMigrations(t *testing.T) {
-	forEachDatabase(t, func(db *xorm.Session) {
-		m := New(db, &Options{
+	forEachDatabase(t, func(db *xorm.Engine) {
+		m := New(db.NewSession(), &Options{
 			TableName:                 "migration",
-			IDColumnName:              "id",
-			IDColumnSize:              255,
 			UseTransaction:            true,
 			ValidateUnknownMigrations: true,
 		}, []*Migration{})
@@ -190,11 +181,9 @@ func TestInitSchemaNoMigrations(t *testing.T) {
 // then initSchema is executed and the migration IDs are stored,
 // even though the relevant migrations are not applied.
 func TestInitSchemaWithMigrations(t *testing.T) {
-	forEachDatabase(t, func(db *xorm.Session) {
-		m := New(db, &Options{
+	forEachDatabase(t, func(db *xorm.Engine) {
+		m := New(db.NewSession(), &Options{
 			TableName:                 "migration",
-			IDColumnName:              "id",
-			IDColumnSize:              255,
 			UseTransaction:            true,
 			ValidateUnknownMigrations: true,
 		}, migrations)
@@ -207,7 +196,7 @@ func TestInitSchemaWithMigrations(t *testing.T) {
 		assert.True(t, has)
 		has, _ = db.IsTableExist(&Pet{})
 		assert.False(t, has)
-		assert.Equal(t, int64(3), tableCount(t, db))
+		assert.Equal(t, int64(1), tableCount(t, db))
 	})
 }
 
@@ -218,11 +207,9 @@ func TestInitSchemaAlreadyInitialised(t *testing.T) {
 		ID int
 	}
 
-	forEachDatabase(t, func(db *xorm.Session) {
-		m := New(db, &Options{
+	forEachDatabase(t, func(db *xorm.Engine) {
+		m := New(db.NewSession(), &Options{
 			TableName:                 "migration",
-			IDColumnName:              "id",
-			IDColumnSize:              255,
 			UseTransaction:            true,
 			ValidateUnknownMigrations: true,
 		}, []*Migration{})
@@ -254,11 +241,9 @@ func TestInitSchemaExistingMigrations(t *testing.T) {
 		ID int
 	}
 
-	forEachDatabase(t, func(db *xorm.Session) {
-		m := New(db, &Options{
+	forEachDatabase(t, func(db *xorm.Engine) {
+		m := New(db.NewSession(), &Options{
 			TableName:                 "migration",
-			IDColumnName:              "id",
-			IDColumnSize:              255,
 			UseTransaction:            true,
 			ValidateUnknownMigrations: true,
 		}, migrations)
@@ -280,11 +265,9 @@ func TestInitSchemaExistingMigrations(t *testing.T) {
 }
 
 func TestMigrationIDDoesNotExist(t *testing.T) {
-	forEachDatabase(t, func(db *xorm.Session) {
-		m := New(db, &Options{
+	forEachDatabase(t, func(db *xorm.Engine) {
+		m := New(db.NewSession(), &Options{
 			TableName:                 "migration",
-			IDColumnName:              "id",
-			IDColumnSize:              255,
 			UseTransaction:            true,
 			ValidateUnknownMigrations: true,
 		}, migrations)
@@ -296,7 +279,7 @@ func TestMigrationIDDoesNotExist(t *testing.T) {
 }
 
 func TestMissingID(t *testing.T) {
-	forEachDatabase(t, func(db *xorm.Session) {
+	forEachDatabase(t, func(db *xorm.Engine) {
 		migrationsMissingID := []*Migration{
 			{
 				Migrate: func(tx *xorm.Session) error {
@@ -305,10 +288,8 @@ func TestMissingID(t *testing.T) {
 			},
 		}
 
-		m := New(db, &Options{
+		m := New(db.NewSession(), &Options{
 			TableName:                 "migration",
-			IDColumnName:              "id",
-			IDColumnSize:              255,
 			UseTransaction:            true,
 			ValidateUnknownMigrations: true,
 		}, migrationsMissingID)
@@ -317,7 +298,7 @@ func TestMissingID(t *testing.T) {
 }
 
 func TestReservedID(t *testing.T) {
-	forEachDatabase(t, func(db *xorm.Session) {
+	forEachDatabase(t, func(db *xorm.Engine) {
 		migrationsReservedID := []*Migration{
 			{
 				ID: "SCHEMA_INIT",
@@ -327,10 +308,8 @@ func TestReservedID(t *testing.T) {
 			},
 		}
 
-		m := New(db, &Options{
+		m := New(db.NewSession(), &Options{
 			TableName:                 "migration",
-			IDColumnName:              "id",
-			IDColumnSize:              255,
 			UseTransaction:            true,
 			ValidateUnknownMigrations: true,
 		}, migrationsReservedID)
@@ -340,7 +319,7 @@ func TestReservedID(t *testing.T) {
 }
 
 func TestDuplicatedID(t *testing.T) {
-	forEachDatabase(t, func(db *xorm.Session) {
+	forEachDatabase(t, func(db *xorm.Engine) {
 		migrationsDuplicatedID := []*Migration{
 			{
 				ID: "201705061500",
@@ -356,10 +335,8 @@ func TestDuplicatedID(t *testing.T) {
 			},
 		}
 
-		m := New(db, &Options{
+		m := New(db.NewSession(), &Options{
 			TableName:                 "migration",
-			IDColumnName:              "id",
-			IDColumnSize:              255,
 			UseTransaction:            true,
 			ValidateUnknownMigrations: true,
 		}, migrationsDuplicatedID)
@@ -369,12 +346,10 @@ func TestDuplicatedID(t *testing.T) {
 }
 
 func TestEmptyMigrationList(t *testing.T) {
-	forEachDatabase(t, func(db *xorm.Session) {
+	forEachDatabase(t, func(db *xorm.Engine) {
 		t.Run("with empty list", func(t *testing.T) {
-			m := New(db, &Options{
+			m := New(db.NewSession(), &Options{
 				TableName:                 "migration",
-				IDColumnName:              "id",
-				IDColumnSize:              255,
 				UseTransaction:            true,
 				ValidateUnknownMigrations: true,
 			}, []*Migration{})
@@ -383,10 +358,8 @@ func TestEmptyMigrationList(t *testing.T) {
 		})
 
 		t.Run("with nil list", func(t *testing.T) {
-			m := New(db, &Options{
+			m := New(db.NewSession(), &Options{
 				TableName:                 "migration",
-				IDColumnName:              "id",
-				IDColumnSize:              255,
 				UseTransaction:            true,
 				ValidateUnknownMigrations: true,
 			}, nil)
@@ -396,13 +369,13 @@ func TestEmptyMigrationList(t *testing.T) {
 	})
 }
 
-func tableCount(t *testing.T, db *xorm.Session) (count int64) {
+func tableCount(t *testing.T, db *xorm.Engine) (count int64) {
 	count, err := db.Count(&Migration{})
 	assert.NoError(t, err)
 	return
 }
 
-func forEachDatabase(t *testing.T, fn func(database *xorm.Session)) {
+func forEachDatabase(t *testing.T, fn func(database *xorm.Engine)) {
 	if len(databases) == 0 {
 		panic("No database chosen for testing!")
 	}
@@ -416,6 +389,6 @@ func forEachDatabase(t *testing.T, fn func(database *xorm.Session)) {
 		// ensure tables do not exists
 		assert.NoError(t, db.DropTables(&Migration{}, &Person{}, &Pet{}, &Book{}))
 
-		fn(db.NewSession())
+		fn(db)
 	}
 }
